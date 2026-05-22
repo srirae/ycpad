@@ -3,8 +3,10 @@ import { Map } from "@/components/ui/map";
 import {useTheme} from "next-themes";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons";
+import { useCompany } from "@/app/data/useCompany";
 export default function Page() {
   const {theme, setTheme} = useTheme();
+
   return (
   
     <div className="relative h-screen w-full">
