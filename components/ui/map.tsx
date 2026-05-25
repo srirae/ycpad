@@ -4,12 +4,9 @@ import MapLibreGL, { type PopupOptions, type MarkerOptions } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
   createContext,
-  forwardRef,
   useCallback,
   useContext,
   useEffect,
-  useId,
-  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -113,36 +110,40 @@ type MapStyleOption = string | MapLibreGL.StyleSpecification;
 
 type MapRef = MapLibreGL.Map;
 
+export type Company = {
+  id: number;
+  name: string;
+  slug: string;
+  former_names?: string[];
+  small_logo_thumb_url?: string;
+  website?: string;
+  all_locations?: string;
+  long_description?: string;
+  one_liner?: string;
+  team_size?: number;
+  industry?: string;
+  subindustry?: string;
+  launched_at?: number;
+  tags?: string[];
+  tags_highlighted?: string[];
+  top_company?: boolean;
+  isHiring?: boolean;
+  nonprofit?: boolean;
+  batch?: string;
+  status?: string;
+  industries?: string[];
+  regions?: string[];
+  stage?: string;
+  url?: string;
+  api?: string;
+};
+
 type MapProps = {
+  center: [number, number];
+  zoom: number;
+  companies?: Company[];
   children?: ReactNode;
-  /** Additional CSS classes for the map container */
-  className?: string;
-  /**
-   * Theme for the map. If not provided, automatically detects system preference.
-   * Pass your theme value here.
-   */
-  theme?: Theme;
-  /** Custom map styles for light and dark themes. Overrides the default Carto styles. */
-  styles?: {
-    light?: MapStyleOption;
-    dark?: MapStyleOption;
-  };
-  /** Map projection type. Use `{ type: "globe" }` for 3D globe view. */
-  projection?: MapLibreGL.ProjectionSpecification;
-  /**
-   * Controlled viewport. When provided with onViewportChange,
-   * the map becomes controlled and viewport is driven by this prop.
-   */
-  viewport?: Partial<MapViewport>;
-  /**
-   * Callback fired continuously as the viewport changes (pan, zoom, rotate, pitch).
-   * Can be used standalone to observe changes, or with `viewport` prop
-   * to enable controlled mode where the map viewport is driven by your state.
-   */
-  onViewportChange?: (viewport: MapViewport) => void;
-  /** Show a loading indicator on the map */
-  loading?: boolean;
-} & Omit<MapLibreGL.MapOptions, "container" | "style">;
+}
 
 function DefaultLoader() {
   return (
@@ -156,54 +157,27 @@ function DefaultLoader() {
   );
 }
 
-function getViewport(map: MapLibreGL.Map): MapViewport {
-  const center = map.getCenter();
-  return {
-    center: [center.lng, center.lat],
-    zoom: map.getZoom(),
-    bearing: map.getBearing(),
-    pitch: map.getPitch(),
-  };
-}
-
-const Map = forwardRef<MapRef, MapProps>(function Map(
-  {
-    children,
-    className,
-    theme: themeProp,
-    styles,
-    projection,
-    viewport,
-    onViewportChange,
-    loading = false,
-    ...props
-  },
-  ref,
-) {
+export function Map({
+  center,
+  zoom,
+  companies,
+  children
+}: MapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [mapInstance, setMapInstance] = useState<MapLibreGL.Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isStyleLoaded, setIsStyleLoaded] = useState(false);
   const currentStyleRef = useRef<MapStyleOption | null>(null);
   const styleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const internalUpdateRef = useRef(false);
-  const resolvedTheme = useResolvedTheme(themeProp);
-
-  const isControlled = viewport !== undefined && onViewportChange !== undefined;
-
-  const onViewportChangeRef = useRef(onViewportChange);
-  onViewportChangeRef.current = onViewportChange;
+  const resolvedTheme = useResolvedTheme();
 
   const mapStyles = useMemo(
     () => ({
-      dark: styles?.dark ?? defaultStyles.dark,
-      light: styles?.light ?? defaultStyles.light,
+      dark: defaultStyles.dark,
+      light: defaultStyles.light,
     }),
-    [styles],
+    [],
   );
-
-  // Expose the map instance to the parent component
-  useImperativeHandle(ref, () => mapInstance as MapLibreGL.Map, [mapInstance]);
 
   const clearStyleTimeout = useCallback(() => {
     if (styleTimeoutRef.current) {
@@ -227,40 +201,26 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
       attributionControl: {
         compact: true,
       },
-      ...props,
-      ...viewport,
+      center,
+      zoom,
     });
 
     const styleDataHandler = () => {
       clearStyleTimeout();
-      // Delay to ensure style is fully processed before allowing layer operations
-      // This is a workaround to avoid race conditions with the style loading
-      // else we have to force update every layer on setStyle change
       styleTimeoutRef.current = setTimeout(() => {
         setIsStyleLoaded(true);
-        if (projection) {
-          map.setProjection(projection);
-        }
       }, 100);
     };
     const loadHandler = () => setIsLoaded(true);
 
-    // Viewport change handler - skip if triggered by internal update
-    const handleMove = () => {
-      if (internalUpdateRef.current) return;
-      onViewportChangeRef.current?.(getViewport(map));
-    };
-
     map.on("load", loadHandler);
     map.on("styledata", styleDataHandler);
-    map.on("move", handleMove);
     setMapInstance(map);
 
     return () => {
       clearStyleTimeout();
       map.off("load", loadHandler);
       map.off("styledata", styleDataHandler);
-      map.off("move", handleMove);
       map.remove();
       setIsLoaded(false);
       setIsStyleLoaded(false);
@@ -269,33 +229,18 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync controlled viewport to map
+  // Sync center and zoom changes to map smoothly
   useEffect(() => {
-    if (!mapInstance || !isControlled || !viewport) return;
-    if (mapInstance.isMoving()) return;
-
-    const current = getViewport(mapInstance);
-    const next = {
-      center: viewport.center ?? current.center,
-      zoom: viewport.zoom ?? current.zoom,
-      bearing: viewport.bearing ?? current.bearing,
-      pitch: viewport.pitch ?? current.pitch,
-    };
-
+    if (!mapInstance) return;
+    const currentCenter = mapInstance.getCenter();
     if (
-      next.center[0] === current.center[0] &&
-      next.center[1] === current.center[1] &&
-      next.zoom === current.zoom &&
-      next.bearing === current.bearing &&
-      next.pitch === current.pitch
+      currentCenter.lng !== center[0] ||
+      currentCenter.lat !== center[1] ||
+      mapInstance.getZoom() !== zoom
     ) {
-      return;
+      mapInstance.easeTo({ center, zoom, duration: 500 });
     }
-
-    internalUpdateRef.current = true;
-    mapInstance.jumpTo(next);
-    internalUpdateRef.current = false;
-  }, [mapInstance, isControlled, viewport]);
+  }, [mapInstance, center, zoom]);
 
   // Handle style change
   useEffect(() => {
@@ -325,15 +270,14 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
     <MapContext.Provider value={contextValue}>
       <div
         ref={containerRef}
-        className={cn("relative h-full w-full", className)}
+        className="relative h-full w-full"
       >
-        {(!isLoaded || loading) && <DefaultLoader />}
-        {/* SSR-safe: children render only when map is loaded on client */}
+        {!isLoaded && <DefaultLoader />}
         {mapInstance && children}
       </div>
     </MapContext.Provider>
   );
-});
+}
 
 type MarkerContextValue = {
   marker: MapLibreGL.Marker;
@@ -385,6 +329,15 @@ function MapMarker({
   ...markerOptions
 }: MapMarkerProps) {
   const { map } = useMap();
+
+  if (
+    Number.isNaN(longitude) ||
+    Number.isNaN(latitude) ||
+    longitude == null ||
+    latitude == null
+  ) {
+    return null;
+  }
 
   const callbacksRef = useRef({
     onClick,
@@ -1062,38 +1015,53 @@ function MapRoute({
   interactive = true,
 }: MapRouteProps) {
   const { map, isLoaded } = useMap();
-  const autoId = useId();
+  const autoId = useMemo(
+    () => `map-${Math.random().toString(36).slice(2, 9)}`,
+    [],
+  );
   const id = propId ?? autoId;
   const sourceId = `route-source-${id}`;
   const layerId = `route-layer-${id}`;
 
-  // Add source and layer on mount
+  // Add source and layer on mount and keep them on style load
   useEffect(() => {
-    if (!isLoaded || !map) return;
+    if (!map) return;
 
-    map.addSource(sourceId, {
-      type: "geojson",
-      data: {
-        type: "Feature",
-        properties: {},
-        geometry: { type: "LineString", coordinates: [] },
-      },
-    });
+    const addRoute = () => {
+      if (!isLoaded) return;
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, {
+          type: "geojson",
+          data: {
+            type: "Feature",
+            properties: {},
+            geometry: { type: "LineString", coordinates },
+          },
+        });
+      }
 
-    map.addLayer({
-      id: layerId,
-      type: "line",
-      source: sourceId,
-      layout: { "line-join": "round", "line-cap": "round" },
-      paint: {
-        "line-color": color,
-        "line-width": width,
-        "line-opacity": opacity,
-        ...(dashArray && { "line-dasharray": dashArray }),
-      },
-    });
+      if (!map.getLayer(layerId)) {
+        map.addLayer({
+          id: layerId,
+          type: "line",
+          source: sourceId,
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": color,
+            "line-width": width,
+            "line-opacity": opacity,
+            ...(dashArray && { "line-dasharray": dashArray }),
+          },
+        });
+      }
+    };
+
+    addRoute();
+
+    map.on("styledata", addRoute);
 
     return () => {
+      map.off("styledata", addRoute);
       try {
         if (map.getLayer(layerId)) map.removeLayer(layerId);
         if (map.getSource(sourceId)) map.removeSource(sourceId);
@@ -1102,7 +1070,7 @@ function MapRoute({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded, map]);
+  }, [isLoaded, map, sourceId, layerId, coordinates, color, width, opacity, dashArray]);
 
   // When coordinates change, update the source data
   useEffect(() => {
@@ -1323,7 +1291,10 @@ function MapArc<T extends MapArcDatum = MapArcDatum>({
   beforeId,
 }: MapArcProps<T>) {
   const { map, isLoaded } = useMap();
-  const autoId = useId();
+  const autoId = useMemo(
+    () => `map-${Math.random().toString(36).slice(2, 9)}`,
+    [],
+  );
   const id = propId ?? autoId;
   const sourceId = `arc-source-${id}`;
   const layerId = `arc-layer-${id}`;
@@ -1365,43 +1336,57 @@ function MapArc<T extends MapArcDatum = MapArcDatum>({
   const latestRef = useRef({ data, onClick, onHover });
   latestRef.current = { data, onClick, onHover };
 
-  // Add source and layers on mount.
+  // Add source and layers on mount and keep them on style load
   useEffect(() => {
-    if (!isLoaded || !map) return;
+    if (!map) return;
 
-    map.addSource(sourceId, {
-      type: "geojson",
-      data: geoJSON,
-      promoteId: "id",
-    });
+    const addArc = () => {
+      if (!isLoaded) return;
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, {
+          type: "geojson",
+          data: geoJSON,
+          promoteId: "id",
+        });
+      }
 
-    map.addLayer(
-      {
-        id: hitLayerId,
-        type: "line",
-        source: sourceId,
-        layout: DEFAULT_ARC_LAYOUT,
-        paint: {
-          "line-color": "rgba(0, 0, 0, 0)",
-          "line-width": hitWidth,
-          "line-opacity": 1,
-        },
-      },
-      beforeId,
-    );
+      if (!map.getLayer(hitLayerId)) {
+        map.addLayer(
+          {
+            id: hitLayerId,
+            type: "line",
+            source: sourceId,
+            layout: DEFAULT_ARC_LAYOUT,
+            paint: {
+              "line-color": "rgba(0, 0, 0, 0)",
+              "line-width": hitWidth,
+              "line-opacity": 1,
+            },
+          },
+          beforeId,
+        );
+      }
 
-    map.addLayer(
-      {
-        id: layerId,
-        type: "line",
-        source: sourceId,
-        layout: mergedLayout,
-        paint: mergedPaint,
-      },
-      beforeId,
-    );
+      if (!map.getLayer(layerId)) {
+        map.addLayer(
+          {
+            id: layerId,
+            type: "line",
+            source: sourceId,
+            layout: mergedLayout,
+            paint: mergedPaint,
+          },
+          beforeId,
+        );
+      }
+    };
+
+    addArc();
+
+    map.on("styledata", addArc);
 
     return () => {
+      map.off("styledata", addArc);
       try {
         if (map.getLayer(layerId)) map.removeLayer(layerId);
         if (map.getLayer(hitLayerId)) map.removeLayer(hitLayerId);
@@ -1411,7 +1396,7 @@ function MapArc<T extends MapArcDatum = MapArcDatum>({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded, map]);
+  }, [isLoaded, map, sourceId, layerId, hitLayerId, geoJSON, hitWidth, beforeId, mergedLayout, mergedPaint]);
 
   // Sync features when data / curvature / samples change.
   useEffect(() => {
@@ -1564,7 +1549,10 @@ function MapClusterLayer<
   onClusterClick,
 }: MapClusterLayerProps<P>) {
   const { map, isLoaded } = useMap();
-  const id = useId();
+  const id = useMemo(
+    () => `map-${Math.random().toString(36).slice(2, 9)}`,
+    [],
+  );
   const sourceId = `cluster-source-${id}`;
   const clusterLayerId = `clusters-${id}`;
   const clusterCountLayerId = `cluster-count-${id}`;
@@ -1576,81 +1564,93 @@ function MapClusterLayer<
     pointColor,
   });
 
-  // Add source and layers on mount
+  // Add source and layers on mount and keep them on style load
   useEffect(() => {
-    if (!isLoaded || !map) return;
+    if (!map) return;
 
-    // Add clustered GeoJSON source
-    map.addSource(sourceId, {
-      type: "geojson",
-      data,
-      cluster: true,
-      clusterMaxZoom,
-      clusterRadius,
-    });
+    const addCluster = () => {
+      if (!isLoaded) return;
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, {
+          type: "geojson",
+          data,
+          cluster: true,
+          clusterMaxZoom,
+          clusterRadius,
+        });
+      }
 
-    // Add cluster circles layer
-    map.addLayer({
-      id: clusterLayerId,
-      type: "circle",
-      source: sourceId,
-      filter: ["has", "point_count"],
-      paint: {
-        "circle-color": [
-          "step",
-          ["get", "point_count"],
-          clusterColors[0],
-          clusterThresholds[0],
-          clusterColors[1],
-          clusterThresholds[1],
-          clusterColors[2],
-        ],
-        "circle-radius": [
-          "step",
-          ["get", "point_count"],
-          20,
-          clusterThresholds[0],
-          30,
-          clusterThresholds[1],
-          40,
-        ],
-        "circle-stroke-width": 1,
-        "circle-stroke-color": "#fff",
-        "circle-opacity": 0.85,
-      },
-    });
+      if (!map.getLayer(clusterLayerId)) {
+        map.addLayer({
+          id: clusterLayerId,
+          type: "circle",
+          source: sourceId,
+          filter: ["has", "point_count"],
+          paint: {
+            "circle-color": [
+              "step",
+              ["get", "point_count"],
+              clusterColors[0],
+              clusterThresholds[0],
+              clusterColors[1],
+              clusterThresholds[1],
+              clusterColors[2],
+            ],
+            "circle-radius": [
+              "step",
+              ["get", "point_count"],
+              20,
+              clusterThresholds[0],
+              30,
+              clusterThresholds[1],
+              40,
+            ],
+            "circle-stroke-width": 1,
+            "circle-stroke-color": "#fff",
+            "circle-opacity": 0.85,
+          },
+        });
+      }
 
-    // Add cluster count text layer
-    map.addLayer({
-      id: clusterCountLayerId,
-      type: "symbol",
-      source: sourceId,
-      filter: ["has", "point_count"],
-      layout: {
-        "text-field": "{point_count_abbreviated}",
-        "text-font": ["Open Sans"],
-        "text-size": 12,
-      },
-      paint: {
-        "text-color": "#fff",
-      },
-    });
+      if (!map.getLayer(clusterCountLayerId)) {
+        map.addLayer({
+          id: clusterCountLayerId,
+          type: "symbol",
+          source: sourceId,
+          filter: ["has", "point_count"],
+          layout: {
+            "text-field": "{point_count_abbreviated}",
+            "text-font": ["Open Sans"],
+            "text-size": 12,
+          },
+          paint: {
+            "text-color": "#fff",
+          },
+        });
+      }
 
-    // Add unclustered point layer
-    map.addLayer({
-      id: unclusteredLayerId,
-      type: "circle",
-      source: sourceId,
-      filter: ["!", ["has", "point_count"]],
-      paint: {
-        "circle-color": pointColor,
-        "circle-radius": 5,
-        "circle-stroke-width": 2,
-        "circle-stroke-color": "#fff",
-      },
-    });
+      if (!map.getLayer(unclusteredLayerId)) {
+        map.addLayer({
+          id: unclusteredLayerId,
+          type: "circle",
+          source: sourceId,
+          filter: ["!", ["has", "point_count"]],
+          paint: {
+            "circle-color": pointColor,
+            "circle-radius": 5,
+            "circle-stroke-width": 2,
+            "circle-stroke-color": "#fff",
+          },
+        });
+      }
+    };
+
+    addCluster();
+
+    map.on("styledata", addCluster);
 
     return () => {
+      map.off("styledata", addCluster);
       try {
         if (map.getLayer(clusterCountLayerId))
           map.removeLayer(clusterCountLayerId);
@@ -1663,7 +1663,7 @@ function MapClusterLayer<
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded, map, sourceId]);
+  }, [isLoaded, map, sourceId, clusterLayerId, clusterCountLayerId, unclusteredLayerId, data, clusterMaxZoom, clusterRadius, clusterColors, clusterThresholds, pointColor]);
 
   // Update source data when data prop changes (only for non-URL data)
   useEffect(() => {
@@ -1827,7 +1827,6 @@ function MapClusterLayer<
 }
 
 export {
-  Map,
   useMap,
   MapMarker,
   MarkerContent,
